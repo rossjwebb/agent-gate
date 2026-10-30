@@ -1,0 +1,5 @@
+allowed_models = ["small-business-assistant"]
+max_monthly_budget_gbp = 50
+max_steps = 20
+risky_tools = ["send_email", "make_payment", "delete_records", "post_publicly"]
+require_owner = true

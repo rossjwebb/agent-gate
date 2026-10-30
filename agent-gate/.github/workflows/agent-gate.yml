@@ -1,0 +1,24 @@
+name: Agent policy gate
+
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  agent-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-gate
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests
+      # Point this at your agents/ directory when adopting the gate.
+      # social-poster.toml is deliberately excluded: it demonstrates failures.
+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml

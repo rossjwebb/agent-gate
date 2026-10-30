@@ -1,0 +1,7 @@
+name = "social-poster"
+model = "unapproved-experimental-model"
+monthly_budget_gbp = 100
+tools = ["draft_post", "post_publicly"]
+# Deliberate typo: this does not grant approval.
+human_aproval_for = ["post_publicly"]
+max_steps = 40

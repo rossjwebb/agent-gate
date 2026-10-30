@@ -1,0 +1,7 @@
+name = "invoice-chaser"
+owner = "accounts-team"
+model = "small-business-assistant"
+monthly_budget_gbp = 25
+tools = ["read_invoices", "send_email"]
+human_approval_for = ["send_email"]
+max_steps = 10
