@@ -8,6 +8,6 @@
 | 10:40 | **Codex pass 2**: same command with `PROMPT-2.md`. | Example agents moved to `examples/agents/`, CLI skips the policy file by resolved path, 2 regression tests added. ~23k tokens. |
 | 10:41 | Human re-check. | **24/24 tests pass.** `examples/` → 2 agents, 6 intended violations, exit 1. `invoice-chaser` alone → PASS, exit 0. |
 
-Not done yet: licence file, public GitHub repo (waiting for review), CI run on GitHub itself.
+Not done yet: CI run on GitHub itself. Licence (MIT) added and repo published 30 Oct after review.
 
 Raw Codex transcripts: `codex-run-1.log`, `codex-run-2.log`. Codex's own summaries: `codex-last-1.md`, `codex-last-2.md`.

@@ -40,4 +40,4 @@ Each step is a separate git commit, so `git log` shows the sequence. Timings and
 
 Agent configs drift. Someone bumps a budget, swaps in an unapproved model, or mistypes the one field that switches human approval on, and nobody notices until something has gone out. Checking that in CI, before merge, makes the controls compulsory instead of optional. This is a small, generic version of an idea I've used on bigger agent programmes.
 
-MIT licence (to add before publishing).
+MIT licence. See [LICENSE](LICENSE).
