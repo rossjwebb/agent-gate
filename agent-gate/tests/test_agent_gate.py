@@ -127,12 +127,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_pass_exit_and_text_summary(self):
-        result = self.check(ROOT / "examples" / "invoice-chaser.toml")
+        result = self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "PASS: checked 1 agent(s); 0 violation(s)\n")
 
     def test_violation_exit_and_text_lines(self):
-        result = self.check(ROOT / "examples" / "social-poster.toml")
+        result = self.check(ROOT / "examples" / "agents" / "social-poster.toml")
         self.assertEqual(result.returncode, 1, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 7)
@@ -141,7 +141,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(lines[-1], "FAIL: checked 1 agent(s); 6 violation(s)")
 
     def test_json_list_schema_and_pass(self):
-        result = self.check(ROOT / "examples" / "social-poster.toml", "--format", "json")
+        result = self.check(ROOT / "examples" / "agents" / "social-poster.toml", "--format", "json")
         self.assertEqual(result.returncode, 1)
         items = json.loads(result.stdout)
         self.assertEqual([item["rule_id"] for item in items], [f"AG00{i}" for i in range(1, 7)])
@@ -149,12 +149,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(set(item), {"agent", "rule_id", "message"})
             self.assertEqual(item["agent"], "social-poster")
             self.assertIsInstance(item["message"], str)
-        result = self.check(ROOT / "examples" / "invoice-chaser.toml", "--format", "json")
+        result = self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml", "--format", "json")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout), [])
 
     def test_recursive_directory_and_stable_order(self):
-        content = (ROOT / "examples" / "social-poster.toml").read_text()
+        content = (ROOT / "examples" / "agents" / "social-poster.toml").read_text()
         (self.directory / "z.toml").write_text(content.replace("social-poster", "last"))
         nested = self.directory / "nested"
         nested.mkdir()
@@ -165,6 +165,25 @@ class CliTests(unittest.TestCase):
         self.assertEqual(first.returncode, 1)
         self.assertEqual(first.stdout, second.stdout)
         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+
+    def test_directory_excludes_policy_file(self):
+        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory.resolve()))):
+            with self.subTest(policy=policy):
+                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                lines = result.stdout.splitlines()
+                self.assertEqual(len(lines), 7)
+                for line in lines[:-1]:
+                    self.assertTrue(line.startswith("FAIL social-poster "), line)
+                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
+
+    def test_directory_with_only_policy_is_empty(self):
+        content = self.policy.read_text()
+        self.policy = self.directory / "policy.toml"
+        self.policy.write_text(content)
+        result = self.check(self.directory)
+        self.assert_error(result)
+        self.assertIn("no agent TOML files found", result.stderr)
 
     def test_malformed_agent_toml(self):
         path = self.directory / "broken.toml"
@@ -179,7 +198,7 @@ class CliTests(unittest.TestCase):
         for content in ["bad = [", "", original.replace("max_steps = 20", "max_steps = true"), original + "typo = 1\n"]:
             with self.subTest(content=content):
                 self.policy.write_text(content)
-                self.assert_error(self.check(ROOT / "examples" / "invoice-chaser.toml"))
+                self.assert_error(self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml"))
 
     def test_invalid_agent_schema(self):
         path = self.directory / "bad-types.toml"

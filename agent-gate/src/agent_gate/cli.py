@@ -9,13 +9,15 @@ from .policy import Policy, load_toml
 from .report import render
 
 
-def agent_files(path: Path) -> list[Path]:
+def agent_files(path: Path, policy_path: Path) -> list[Path]:
     if path.is_file():
-        return [path]
-    if not path.is_dir():
+        files = [path]
+    elif path.is_dir():
+        files = sorted(path.rglob("*.toml"))
+    else:
         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
-    files = sorted(path.rglob("*.toml"))
-    files = [file for file in files if file.is_file()]
+    policy_path = policy_path.resolve()
+    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
     if not files:
         raise ValueError(f"{path}: no agent TOML files found")
     return files
@@ -32,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         policy = Policy.load(args.policy)
-        files = agent_files(args.agents)
+        files = agent_files(args.agents, args.policy)
         violations = []
         for path in files:
             data = load_toml(path)

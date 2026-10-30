@@ -5,8 +5,8 @@ source using only the standard library:
 
 ```sh
 export PYTHONPATH=src
-python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
-python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+python -m agent_gate check --policy examples/policy.toml examples/agents/invoice-chaser.toml
+python -m agent_gate check --policy examples/policy.toml examples/agents/social-poster.toml --format json
 python -m unittest discover -s tests
 ```
 
@@ -20,9 +20,9 @@ python -m agent_gate check --policy policy.toml agents/ --format json
 ```
 
 The input may be a single file or a directory searched recursively for `*.toml`.
-Keep the policy outside the agent directory. The examples use fictional model
-names; replace these with your team's model identifiers. `invoice-chaser` passes;
-`social-poster` deliberately violates all six rules.
+The policy file is excluded when it is inside the agent directory. The examples
+use fictional model names; replace these with your team's model identifiers.
+`invoice-chaser` passes; `social-poster` deliberately violates all six rules.
 
 Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
 a summary. JSON reports are a list of objects with `agent`, `rule_id`, and

@@ -1,0 +1,1241 @@
+start 10:39:20
+Reading additional input from stdin...
+OpenAI Codex v0.162.1
+--------
+workdir: /Users/rosswebb/codex-ambassadors/codex-build
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: high
+reasoning summaries: none
+session id: 01a18c64-8671-76e3-9215-b2c5afaff7f8
+--------
+user
+Small follow-up on agent-gate (in ./agent-gate):
+
+When I ran `python -m agent_gate check --policy examples/policy.toml examples/` the gate treated policy.toml as an agent and reported 6 bogus violations for an agent called "policy". Fix it two ways:
+1. Move the example agents into `examples/agents/` (keep `examples/policy.toml` where it is) and update the README and workflow paths.
+2. In the CLI, if the policy file sits inside the agents path, skip it when collecting agent files, and add a test for that.
+
+Keep everything else as it is. Run the full test suite and make sure it passes before you finish.
+[line removed: an unrelated MCP server in the local Codex config failed to start; it was not used in this build]
+codex
+I’ll check the file collection code and example paths, make the focused changes, then run the full test suite.
+exec
+/bin/zsh -lc "pwd; rg --files -g 'AGENTS.md' -g '"'!node_modules'"' -g '"'!venv'"' . .." in /Users/rosswebb/codex-ambassadors/codex-build
+ exited 1 in 0ms:
+/Users/rosswebb/codex-ambassadors/codex-build
+
+exec
+/bin/zsh -lc 'for p in /AGENTS.md /Users/AGENTS.md /Users/rosswebb/AGENTS.md /Users/rosswebb/codex-ambassadors/AGENTS.md /Users/rosswebb/codex-ambassadors/codex-build/AGENTS.md; do if [ -f "$p" ]; then cat "$p"; fi; done' in /Users/rosswebb/codex-ambassadors/codex-build
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "git status --short; rg --files -g '"'!*.pyc'"' -g '"'!uv.lock'"' -g '"'!node_modules'"' -g '"'!venv'"'" in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ succeeded in 0ms:
+?? ../codex-run-2.log
+src/agent_gate/report.py
+src/agent_gate/__main__.py
+src/agent_gate/cli.py
+src/agent_gate/__init__.py
+src/agent_gate/policy.py
+src/agent_gate/checks.py
+_build_backend.py
+examples/policy.toml
+examples/invoice-chaser.toml
+examples/social-poster.toml
+README.md
+tests/test_agent_gate.py
+pyproject.toml
+
+exec
+/bin/zsh -lc "rg --files --hidden -g '"'!.git'"' -g '"'!__pycache__'"' -g '"'!*.pyc'"' -g '"'!venv'"' -g '"'!node_modules'"'; cat src/agent_gate/cli.py tests/test_agent_gate.py pyproject.toml README.md; rg -n --hidden -g '"'!.git'"' 'examples/|agent_gate check' . .." in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ succeeded in 0ms:
+src/agent_gate/report.py
+src/agent_gate/__main__.py
+src/agent_gate/cli.py
+src/agent_gate/__init__.py
+src/agent_gate/policy.py
+src/agent_gate/checks.py
+.github/workflows/agent-gate.yml
+_build_backend.py
+examples/policy.toml
+examples/invoice-chaser.toml
+examples/social-poster.toml
+.gitignore
+README.md
+tests/test_agent_gate.py
+pyproject.toml
+"""Command-line entry point."""
+
+import argparse
+from pathlib import Path
+import sys
+
+from .checks import check_agent
+from .policy import Policy, load_toml
+from .report import render
+
+
+def agent_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+    files = sorted(path.rglob("*.toml"))
+    files = [file for file in files if file.is_file()]
+    if not files:
+        raise ValueError(f"{path}: no agent TOML files found")
+    return files
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="agent-gate")
+    commands = parser.add_subparsers(dest="command", required=True)
+    check = commands.add_parser("check", help="check agents against a policy")
+    check.add_argument("--policy", type=Path, required=True)
+    check.add_argument("--format", choices=("text", "json"), default="text")
+    check.add_argument("agents", type=Path, help="agent TOML file or directory (recursive)")
+    args = parser.parse_args(argv)
+
+    try:
+        policy = Policy.load(args.policy)
+        files = agent_files(args.agents)
+        violations = []
+        for path in files:
+            data = load_toml(path)
+            try:
+                violations.extend(check_agent(data, policy, path.stem))
+            except ValueError as exc:
+                raise ValueError(f"{path}: {exc}") from None
+    except (ValueError, OSError) as exc:
+        print(f"agent-gate: error: {exc}", file=sys.stderr)
+        return 2
+
+    print(render(violations, len(files), args.format))
+    return 1 if violations else 0
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from agent_gate.checks import check_agent
+from agent_gate.policy import Policy
+
+
+class RuleTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = Policy(["approved"], 50, 20, ["send_email", "make_payment"], True)
+        self.agent = {
+            "name": "example",
+            "owner": "accounts",
+            "model": "approved",
+            "monthly_budget_gbp": 50,
+            "tools": ["read_invoices", "send_email"],
+            "human_approval_for": ["send_email"],
+            "max_steps": 20,
+        }
+
+    def rules(self):
+        return [item.rule_id for item in check_agent(self.agent, self.policy, "fallback")]
+
+    def test_compliant_at_caps(self):
+        self.assertEqual(self.rules(), [])
+
+    def test_ag001_unapproved_or_missing_model(self):
+        self.agent["model"] = "other"
+        self.assertEqual(self.rules(), ["AG001"])
+        del self.agent["model"]
+        self.assertEqual(self.rules(), ["AG001"])
+
+    def test_ag002_over_cap_or_missing_budget(self):
+        self.agent["monthly_budget_gbp"] = 50.01
+        self.assertEqual(self.rules(), ["AG002"])
+        del self.agent["monthly_budget_gbp"]
+        self.assertEqual(self.rules(), ["AG002"])
+
+    def test_ag003_each_unapproved_risky_tool_once(self):
+        self.agent["tools"] += ["make_payment", "send_email"]
+        self.agent["human_approval_for"] = []
+        results = check_agent(self.agent, self.policy, "fallback")
+        self.assertEqual([item.rule_id for item in results], ["AG003", "AG003"])
+        self.assertIn("make_payment", results[0].message)
+        self.assertIn("send_email", results[1].message)
+
+    def test_ag003_missing_approval_list(self):
+        del self.agent["human_approval_for"]
+        self.assertEqual(self.rules(), ["AG003"])
+
+    def test_unused_risky_tools_need_no_approval(self):
+        self.agent["tools"] = ["read_invoices"]
+        self.agent["human_approval_for"] = []
+        self.assertEqual(self.rules(), [])
+
+    def test_ag004_over_cap_or_missing_steps(self):
+        self.agent["max_steps"] = 21
+        self.assertEqual(self.rules(), ["AG004"])
+        del self.agent["max_steps"]
+        self.assertEqual(self.rules(), ["AG004"])
+
+    def test_ag005_missing_or_blank_owner(self):
+        del self.agent["owner"]
+        self.assertEqual(self.rules(), ["AG005"])
+        self.agent["owner"] = "  "
+        self.assertEqual(self.rules(), ["AG005"])
+
+    def test_owner_optional(self):
+        del self.agent["owner"]
+        policy = Policy(["approved"], 50, 20, [], False)
+        self.assertEqual(check_agent(self.agent, policy, "fallback"), [])
+
+    def test_ag006_typo_does_not_grant_approval(self):
+        self.agent["human_aproval_for"] = self.agent.pop("human_approval_for")
+        self.assertEqual(self.rules(), ["AG003", "AG006"])
+
+    def test_fallback_name(self):
+        del self.agent["name"]
+        del self.agent["owner"]
+        self.assertEqual(check_agent(self.agent, self.policy, "fallback")[0].agent, "fallback")
+
+    def test_invalid_types_and_ranges_are_errors(self):
+        cases = [
+            ("monthly_budget_gbp", True), ("monthly_budget_gbp", -1),
+            ("monthly_budget_gbp", float("nan")), ("monthly_budget_gbp", float("inf")),
+            ("max_steps", True), ("max_steps", 2.5), ("max_steps", 0),
+            ("tools", "send_email"), ("tools", [1]),
+            ("human_approval_for", [False]), ("owner", 42), ("name", []),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                agent = {**self.agent, field: value}
+                with self.assertRaisesRegex(ValueError, field):
+                    check_agent(agent, self.policy, "fallback")
+
+
+class CliTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.policy = ROOT / "examples" / "policy.toml"
+
+    def run_cli(self, *args):
+        env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+        return subprocess.run(
+            [sys.executable, "-m", "agent_gate", *map(str, args)],
+            cwd=self.directory, env=env, text=True, capture_output=True,
+        )
+
+    def check(self, path, *args):
+        return self.run_cli("check", "--policy", self.policy, path, *args)
+
+    def assert_error(self, result):
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("error:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_pass_exit_and_text_summary(self):
+        result = self.check(ROOT / "examples" / "invoice-chaser.toml")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "PASS: checked 1 agent(s); 0 violation(s)\n")
+
+    def test_violation_exit_and_text_lines(self):
+        result = self.check(ROOT / "examples" / "social-poster.toml")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 7)
+        for index, line in enumerate(lines[:-1], 1):
+            self.assertTrue(line.startswith(f"FAIL social-poster AG00{index} "), line)
+        self.assertEqual(lines[-1], "FAIL: checked 1 agent(s); 6 violation(s)")
+
+    def test_json_list_schema_and_pass(self):
+        result = self.check(ROOT / "examples" / "social-poster.toml", "--format", "json")
+        self.assertEqual(result.returncode, 1)
+        items = json.loads(result.stdout)
+        self.assertEqual([item["rule_id"] for item in items], [f"AG00{i}" for i in range(1, 7)])
+        for item in items:
+            self.assertEqual(set(item), {"agent", "rule_id", "message"})
+            self.assertEqual(item["agent"], "social-poster")
+            self.assertIsInstance(item["message"], str)
+        result = self.check(ROOT / "examples" / "invoice-chaser.toml", "--format", "json")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), [])
+
+    def test_recursive_directory_and_stable_order(self):
+        content = (ROOT / "examples" / "social-poster.toml").read_text()
+        (self.directory / "z.toml").write_text(content.replace("social-poster", "last"))
+        nested = self.directory / "nested"
+        nested.mkdir()
+        (nested / "a.toml").write_text(content.replace("social-poster", "first"))
+        (self.directory / "ignored.txt").write_text("not TOML")
+        first = self.check(self.directory, "--format", "json")
+        second = self.check(self.directory, "--format", "json")
+        self.assertEqual(first.returncode, 1)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+
+    def test_malformed_agent_toml(self):
+        path = self.directory / "broken.toml"
+        path.write_text('name = "unterminated')
+        result = self.check(path)
+        self.assert_error(result)
+        self.assertIn("broken.toml", result.stderr)
+
+    def test_malformed_or_invalid_policy(self):
+        original = self.policy.read_text()
+        self.policy = self.directory / "policy.toml"
+        for content in ["bad = [", "", original.replace("max_steps = 20", "max_steps = true"), original + "typo = 1\n"]:
+            with self.subTest(content=content):
+                self.policy.write_text(content)
+                self.assert_error(self.check(ROOT / "examples" / "invoice-chaser.toml"))
+
+    def test_invalid_agent_schema(self):
+        path = self.directory / "bad-types.toml"
+        path.write_text('tools = "send_email"')
+        result = self.check(path)
+        self.assert_error(result)
+        self.assertIn("tools must be", result.stderr)
+
+    def test_invalid_utf8(self):
+        path = self.directory / "bad-encoding.toml"
+        path.write_bytes(b"\xff")
+        self.assert_error(self.check(path))
+
+    def test_missing_path_or_empty_directory(self):
+        self.assert_error(self.check(self.directory / "missing.toml"))
+        self.assert_error(self.check(self.directory))
+
+    def test_usage_errors(self):
+        for args in [(), ("check",), ("unknown",), ("check", "--format", "xml")]:
+            with self.subTest(args=args):
+                self.assert_error(self.run_cli(*args))
+
+
+if __name__ == "__main__":
+    unittest.main()
+[build-system]
+requires = []
+build-backend = "_build_backend"
+backend-path = ["."]
+
+[project]
+name = "agent-gate"
+version = "0.1.0"
+description = "A pre-merge policy gate for TOML agent definitions"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agent-gate = "agent_gate.cli:main"
+
+## Usage
+
+Requires Python 3.11+. From the `agent-gate` directory, run directly from
+source using only the standard library:
+
+```sh
+export PYTHONPATH=src
+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+python -m unittest discover -s tests
+```
+
+For the `agent-gate` console command, install with `python -m pip install .`.
+The included build backend and application use only the standard library;
+installation does not need to download any build dependencies.
+
+```sh
+agent-gate check --policy policy.toml agents/
+python -m agent_gate check --policy policy.toml agents/ --format json
+```
+
+The input may be a single file or a directory searched recursively for `*.toml`.
+Keep the policy outside the agent directory. The examples use fictional model
+names; replace these with your team's model identifiers. `invoice-chaser` passes;
+`social-poster` deliberately violates all six rules.
+
+Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
+a summary. JSON reports are a list of objects with `agent`, `rule_id`, and
+`message` keys, or `[]` when everything passes. Files, rules, and tool names
+have deterministic ordering. Missing or blank names fall back to the filename.
+
+Exit codes: **0** pass, **1** policy violations, **2** usage, file, TOML, or
+schema errors. Errors go to stderr. Invalid field types, negative/non-finite
+budgets, non-positive step limits, and empty input directories are errors.
+Missing budgets and step limits are policy violations. Tool lists default to
+empty when absent; unknown agent fields produce AG006.
+
+Copy `.github/workflows/agent-gate.yml` to the repository root's
+`.github/workflows/` to activate it. It assumes this project lives in
+`agent-gate/`; remove `working-directory` if the project is the repository root.
+Change the final command to check your actual agent directory, and require
+the job in your repository's branch protection settings to block merges.
+./.github/workflows/agent-gate.yml:24:      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-2.log:17:When I ran `python -m agent_gate check --policy examples/policy.toml examples/` the gate treated policy.toml as an agent and reported 6 bogus violations for an agent called "policy". Fix it two ways:
+../codex-run-2.log:18:1. Move the example agents into `examples/agents/` (keep `examples/policy.toml` where it is) and update the README and workflow paths.
+../codex-run-2.log:44:examples/policy.toml
+../codex-run-2.log:45:examples/invoice-chaser.toml
+../codex-run-2.log:46:examples/social-poster.toml
+./README.md:8:python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+./README.md:9:python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+./README.md:19:python -m agent_gate check --policy policy.toml agents/ --format json
+../PROMPT-1.md:8:- CLI: `python -m agent_gate check --policy policy.toml agents/` (agents/ may be a directory of `*.toml` files or a single file). Options: `--format text|json`. Exit 0 if all agents pass, 1 if any violation, 2 for usage/parse errors (with a clear message, never a traceback).
+../PROMPT-1.md:13:- `examples/`: a `policy.toml`, one compliant agent (`invoice-chaser.toml`), and one non-compliant agent (`social-poster.toml`) that trips several rules. Use made-up, generic small-business examples only.
+../agent-gate/README.md:8:python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../agent-gate/README.md:9:python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../agent-gate/README.md:19:python -m agent_gate check --policy policy.toml agents/ --format json
+../agent-gate/.github/workflows/agent-gate.yml:24:      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../PROMPT-2.md:3:When I ran `python -m agent_gate check --policy examples/policy.toml examples/` the gate treated policy.toml as an agent and reported 6 bogus violations for an agent called "policy". Fix it two ways:
+../PROMPT-2.md:4:1. Move the example agents into `examples/agents/` (keep `examples/policy.toml` where it is) and update the README and workflow paths.
+../codex-run-1.log:22:- CLI: `python -m agent_gate check --policy policy.toml agents/` (agents/ may be a directory of `*.toml` files or a single file). Options: `--format text|json`. Exit 0 if all agents pass, 1 if any violation, 2 for usage/parse errors (with a clear message, never a traceback).
+../codex-run-1.log:27:- `examples/`: a `policy.toml`, one compliant agent (`invoice-chaser.toml`), and one non-compliant agent (`social-poster.toml`) that trips several rules. Use made-up, generic small-business examples only.
+../codex-run-1.log:63:/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:64:/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/policy.toml
+../codex-run-1.log:65:/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/social-poster.toml
+../codex-run-1.log:102:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:116:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:117:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:126:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:150:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:154:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:163:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:167:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:174:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:178:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:480:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:494:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:495:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:504:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:528:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:532:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:541:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:545:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:552:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:556:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:865:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:889:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:890:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:900:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:992:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:996:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:1005:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:1009:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:1016:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:1020:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:1543:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:1567:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:1568:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:1578:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:1670:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:1674:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:1683:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:1687:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:1694:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:1698:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:2198:"$build_test_dir/venv/bin/agent-gate" check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:2199:"$build_test_dir/venv/bin/python" -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:2280:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:2304:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:2305:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:2315:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:2407:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:2411:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:2420:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:2424:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:2431:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:2435:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:2953:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:2977:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:2978:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:2988:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:3084:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:3088:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:3097:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:3101:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:3108:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:3112:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:3661:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:3685:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:3686:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:3696:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:3792:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:3796:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:3805:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:3809:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:3816:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:3820:+++ b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:4342:+      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:4366:+python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+../codex-run-1.log:4367:+python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
+../codex-run-1.log:4377:+python -m agent_gate check --policy policy.toml agents/ --format json
+../codex-run-1.log:4473:diff --git a/agent-gate/examples/invoice-chaser.toml b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:4477:+++ b/agent-gate/examples/invoice-chaser.toml
+../codex-run-1.log:4486:diff --git a/agent-gate/examples/policy.toml b/agent-gate/examples/policy.toml
+../codex-run-1.log:4490:+++ b/agent-gate/examples/policy.toml
+../codex-run-1.log:4497:diff --git a/agent-gate/examples/social-poster.toml b/agent-gate/examples/social-poster.toml
+../codex-run-1.log:4501:+++ b/agent-gate/examples/social-poster.toml
+
+codex
+The collector currently includes every TOML file it finds. I’ll exclude the policy by its resolved path, move the two example agents, and update their references. The workflow will still check the passing example.
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+root = Path('.')
+(root / 'examples/agents').mkdir()
+for name in ('invoice-chaser.toml', 'social-poster.toml'):
+    (root / 'examples' / name).rename(root / 'examples/agents' / name)
+for path in (root / 'README.md', root / '.github/workflows/agent-gate.yml', root / 'tests/test_agent_gate.py'):
+    text = path.read_text()
+    for name in ('invoice-chaser.toml', 'social-poster.toml'):
+        text = text.replace(f'examples/{name}', f'examples/agents/{name}')
+        text = text.replace(f'\"examples\" / \"{name}\"', f'\"examples\" / \"agents\" / \"{name}\"')
+    if path.name == 'README.md':
+        text = text.replace('Keep the policy outside the agent directory. The examples use fictional model\\nnames;', 'The policy file is excluded when it is inside the agent directory. The examples\\nuse fictional model names;')
+    path.write_text(text)
+PY" in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ succeeded in 0ms:
+apply patch
+patch: completed
+/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/src/agent_gate/cli.py
+/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/tests/test_agent_gate.py
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+
+apply patch
+patch: completed
+/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/tests/test_agent_gate.py
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 911a9be670e941c281348781d8edbeb0de6ea306..11bc3aeb62b362c38e1bedc9186b4287f2f9b8f7
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -166,6 +166,25 @@
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+
+exec
+/bin/zsh -lc 'python3 -m unittest discover -s tests -v' in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+exec
+/bin/zsh -lc "git diff --check; git diff --stat; git diff -- src/agent_gate/cli.py tests/test_agent_gate.py README.md .github/workflows/agent-gate.yml; git status --short; rg -n --hidden -g '"'!.git'"' 'examples/(invoice-chaser|social-poster)\\.toml' ." in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ exited 1 in 0ms:
+ agent-gate/.github/workflows/agent-gate.yml |  2 +-
+ agent-gate/README.md                        |  8 ++++----
+ agent-gate/examples/invoice-chaser.toml     |  7 -------
+ agent-gate/examples/social-poster.toml      |  7 -------
+ agent-gate/src/agent_gate/cli.py            | 14 +++++++------
+ agent-gate/tests/test_agent_gate.py         | 31 +++++++++++++++++++++++------
+ 6 files changed, 38 insertions(+), 31 deletions(-)
+diff --git a/agent-gate/.github/workflows/agent-gate.yml b/agent-gate/.github/workflows/agent-gate.yml
+index e66004b..5e8f8c4 100644
+--- a/agent-gate/.github/workflows/agent-gate.yml
++++ b/agent-gate/.github/workflows/agent-gate.yml
+@@ -21,4 +21,4 @@ jobs:
+       - run: python -m unittest discover -s tests
+       # Point this at your agents/ directory when adopting the gate.
+       # social-poster.toml is deliberately excluded: it demonstrates failures.
+-      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
++      - run: python -m agent_gate check --policy examples/policy.toml examples/agents/invoice-chaser.toml
+diff --git a/agent-gate/README.md b/agent-gate/README.md
+index f2ce7e0..e23957d 100644
+--- a/agent-gate/README.md
++++ b/agent-gate/README.md
+@@ -5,8 +5,8 @@ source using only the standard library:
+ 
+ ```sh
+ export PYTHONPATH=src
+-python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+-python -m agent_gate check --policy examples/policy.toml examples/social-poster.toml --format json
++python -m agent_gate check --policy examples/policy.toml examples/agents/invoice-chaser.toml
++python -m agent_gate check --policy examples/policy.toml examples/agents/social-poster.toml --format json
+ python -m unittest discover -s tests
+ ```
+ 
+@@ -20,8 +20,8 @@ python -m agent_gate check --policy policy.toml agents/ --format json
+ ```
+ 
+ The input may be a single file or a directory searched recursively for `*.toml`.
+-Keep the policy outside the agent directory. The examples use fictional model
+-names; replace these with your team's model identifiers. `invoice-chaser` passes;
++The policy file is excluded when it is inside the agent directory. The examples
++use fictional model names; replace these with your team's model identifiers. `invoice-chaser` passes;
+ `social-poster` deliberately violates all six rules.
+ 
+ Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b..2da0bca 100644
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@ from .policy import Policy, load_toml
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 8f53ade..11bc3ae 100644
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -127,12 +127,12 @@ class CliTests(unittest.TestCase):
+         self.assertEqual(result.stdout, "")
+ 
+     def test_pass_exit_and_text_summary(self):
+-        result = self.check(ROOT / "examples" / "invoice-chaser.toml")
++        result = self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml")
+         self.assertEqual(result.returncode, 0, result.stderr)
+         self.assertEqual(result.stdout, "PASS: checked 1 agent(s); 0 violation(s)\n")
+ 
+     def test_violation_exit_and_text_lines(self):
+-        result = self.check(ROOT / "examples" / "social-poster.toml")
++        result = self.check(ROOT / "examples" / "agents" / "social-poster.toml")
+         self.assertEqual(result.returncode, 1, result.stderr)
+         lines = result.stdout.splitlines()
+         self.assertEqual(len(lines), 7)
+@@ -141,7 +141,7 @@ class CliTests(unittest.TestCase):
+         self.assertEqual(lines[-1], "FAIL: checked 1 agent(s); 6 violation(s)")
+ 
+     def test_json_list_schema_and_pass(self):
+-        result = self.check(ROOT / "examples" / "social-poster.toml", "--format", "json")
++        result = self.check(ROOT / "examples" / "agents" / "social-poster.toml", "--format", "json")
+         self.assertEqual(result.returncode, 1)
+         items = json.loads(result.stdout)
+         self.assertEqual([item["rule_id"] for item in items], [f"AG00{i}" for i in range(1, 7)])
+@@ -149,12 +149,12 @@ class CliTests(unittest.TestCase):
+             self.assertEqual(set(item), {"agent", "rule_id", "message"})
+             self.assertEqual(item["agent"], "social-poster")
+             self.assertIsInstance(item["message"], str)
+-        result = self.check(ROOT / "examples" / "invoice-chaser.toml", "--format", "json")
++        result = self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml", "--format", "json")
+         self.assertEqual(result.returncode, 0)
+         self.assertEqual(json.loads(result.stdout), [])
+ 
+     def test_recursive_directory_and_stable_order(self):
+-        content = (ROOT / "examples" / "social-poster.toml").read_text()
++        content = (ROOT / "examples" / "agents" / "social-poster.toml").read_text()
+         (self.directory / "z.toml").write_text(content.replace("social-poster", "last"))
+         nested = self.directory / "nested"
+         nested.mkdir()
+@@ -166,6 +166,25 @@ class CliTests(unittest.TestCase):
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+@@ -179,7 +198,7 @@ class CliTests(unittest.TestCase):
+         for content in ["bad = [", "", original.replace("max_steps = 20", "max_steps = true"), original + "typo = 1\n"]:
+             with self.subTest(content=content):
+                 self.policy.write_text(content)
+-                self.assert_error(self.check(ROOT / "examples" / "invoice-chaser.toml"))
++                self.assert_error(self.check(ROOT / "examples" / "agents" / "invoice-chaser.toml"))
+ 
+     def test_invalid_agent_schema(self):
+         path = self.directory / "bad-types.toml"
+ M .github/workflows/agent-gate.yml
+ M README.md
+ D examples/invoice-chaser.toml
+ D examples/social-poster.toml
+ M src/agent_gate/cli.py
+ M tests/test_agent_gate.py
+?? examples/agents/
+?? ../codex-run-2.log
+
+ exited 1 in 737ms:
+test_directory_excludes_policy_file (test_agent_gate.CliTests.test_directory_excludes_policy_file) ... 
+  test_directory_excludes_policy_file (test_agent_gate.CliTests.test_directory_excludes_policy_file) (policy=PosixPath('../../../../../../Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/policy.toml')) ... FAIL
+test_directory_with_only_policy_is_empty (test_agent_gate.CliTests.test_directory_with_only_policy_is_empty) ... ok
+test_invalid_agent_schema (test_agent_gate.CliTests.test_invalid_agent_schema) ... ok
+test_invalid_utf8 (test_agent_gate.CliTests.test_invalid_utf8) ... ok
+test_json_list_schema_and_pass (test_agent_gate.CliTests.test_json_list_schema_and_pass) ... ok
+test_malformed_agent_toml (test_agent_gate.CliTests.test_malformed_agent_toml) ... ok
+test_malformed_or_invalid_policy (test_agent_gate.CliTests.test_malformed_or_invalid_policy) ... ok
+test_missing_path_or_empty_directory (test_agent_gate.CliTests.test_missing_path_or_empty_directory) ... ok
+test_pass_exit_and_text_summary (test_agent_gate.CliTests.test_pass_exit_and_text_summary) ... ok
+test_recursive_directory_and_stable_order (test_agent_gate.CliTests.test_recursive_directory_and_stable_order) ... ok
+test_usage_errors (test_agent_gate.CliTests.test_usage_errors) ... ok
+test_violation_exit_and_text_lines (test_agent_gate.CliTests.test_violation_exit_and_text_lines) ... ok
+test_ag001_unapproved_or_missing_model (test_agent_gate.RuleTests.test_ag001_unapproved_or_missing_model) ... ok
+test_ag002_over_cap_or_missing_budget (test_agent_gate.RuleTests.test_ag002_over_cap_or_missing_budget) ... ok
+test_ag003_each_unapproved_risky_tool_once (test_agent_gate.RuleTests.test_ag003_each_unapproved_risky_tool_once) ... ok
+test_ag003_missing_approval_list (test_agent_gate.RuleTests.test_ag003_missing_approval_list) ... ok
+test_ag004_over_cap_or_missing_steps (test_agent_gate.RuleTests.test_ag004_over_cap_or_missing_steps) ... ok
+test_ag005_missing_or_blank_owner (test_agent_gate.RuleTests.test_ag005_missing_or_blank_owner) ... ok
+test_ag006_typo_does_not_grant_approval (test_agent_gate.RuleTests.test_ag006_typo_does_not_grant_approval) ... ok
+test_compliant_at_caps (test_agent_gate.RuleTests.test_compliant_at_caps) ... ok
+test_fallback_name (test_agent_gate.RuleTests.test_fallback_name) ... ok
+test_invalid_types_and_ranges_are_errors (test_agent_gate.RuleTests.test_invalid_types_and_ranges_are_errors) ... ok
+test_owner_optional (test_agent_gate.RuleTests.test_owner_optional) ... ok
+test_unused_risky_tools_need_no_approval (test_agent_gate.RuleTests.test_unused_risky_tools_need_no_approval) ... ok
+
+======================================================================
+FAIL: test_directory_excludes_policy_file (test_agent_gate.CliTests.test_directory_excludes_policy_file) (policy=PosixPath('../../../../../../Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/policy.toml'))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/tests/test_agent_gate.py", line 173, in test_directory_excludes_policy_file
+    self.assertEqual(result.returncode, 1, result.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1 : agent-gate: error: ../../../../../../Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/policy.toml: [Errno 2] No such file or directory: '../../../../../../Users/rosswebb/codex-ambassadors/codex-build/agent-gate/examples/policy.toml'
+
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.741s
+
+FAILED (failures=1)
+
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 911a9be670e941c281348781d8edbeb0de6ea306..11bc3aeb62b362c38e1bedc9186b4287f2f9b8f7
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -166,6 +166,25 @@
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+
+apply patch
+patch: completed
+/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/README.md
+/Users/rosswebb/codex-ambassadors/codex-build/agent-gate/tests/test_agent_gate.py
+diff --git a/agent-gate/README.md b/agent-gate/README.md
+index e23957d28d0d9da9ea6883cd51e023879f7afcf2..dac92a8ae7a0dbf1861415a36249acddf0a12511
+--- a/agent-gate/README.md
++++ b/agent-gate/README.md
+@@ -21,8 +21,8 @@
+ 
+ The input may be a single file or a directory searched recursively for `*.toml`.
+ The policy file is excluded when it is inside the agent directory. The examples
+-use fictional model names; replace these with your team's model identifiers. `invoice-chaser` passes;
+-`social-poster` deliberately violates all six rules.
++use fictional model names; replace these with your team's model identifiers.
++`invoice-chaser` passes; `social-poster` deliberately violates all six rules.
+ 
+ Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
+ a summary. JSON reports are a list of objects with `agent`, `rule_id`, and
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 911a9be670e941c281348781d8edbeb0de6ea306..15161a020d72d1b90ffbb4bb01c423e2f87f4ba8
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -166,6 +166,25 @@
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory.resolve()))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+
+exec
+/bin/zsh -lc 'PYTHONPATH=src python3 -m agent_gate check --policy examples/policy.toml examples/' in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ exited 1 in 0ms:
+FAIL social-poster AG001 model 'unapproved-experimental-model' is not on the allowlist
+FAIL social-poster AG002 monthly_budget_gbp 100 exceeds cap 50
+FAIL social-poster AG003 risky tool 'post_publicly' requires human_approval_for
+FAIL social-poster AG004 max_steps 40 exceeds cap 20
+FAIL social-poster AG005 owner is required
+FAIL social-poster AG006 unknown agent field 'human_aproval_for'
+FAIL: checked 2 agent(s); 6 violation(s)
+
+exec
+/bin/zsh -lc "git diff --check; python3 - <<'PY'
+from pathlib import Path
+import subprocess
+for name in ('invoice-chaser.toml', 'social-poster.toml'):
+    old = subprocess.check_output(['git', 'show', f'HEAD:agent-gate/examples/{name}'])
+    assert (Path('examples/agents') / name).read_bytes() == old
+print('Moved example contents unchanged.')
+PY" in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ succeeded in 0ms:
+Moved example contents unchanged.
+
+exec
+/bin/zsh -lc 'python3 -m unittest discover -s tests -v' in /Users/rosswebb/codex-ambassadors/codex-build/agent-gate
+ succeeded in 662ms:
+test_directory_excludes_policy_file (test_agent_gate.CliTests.test_directory_excludes_policy_file) ... ok
+test_directory_with_only_policy_is_empty (test_agent_gate.CliTests.test_directory_with_only_policy_is_empty) ... ok
+test_invalid_agent_schema (test_agent_gate.CliTests.test_invalid_agent_schema) ... ok
+test_invalid_utf8 (test_agent_gate.CliTests.test_invalid_utf8) ... ok
+test_json_list_schema_and_pass (test_agent_gate.CliTests.test_json_list_schema_and_pass) ... ok
+test_malformed_agent_toml (test_agent_gate.CliTests.test_malformed_agent_toml) ... ok
+test_malformed_or_invalid_policy (test_agent_gate.CliTests.test_malformed_or_invalid_policy) ... ok
+test_missing_path_or_empty_directory (test_agent_gate.CliTests.test_missing_path_or_empty_directory) ... ok
+test_pass_exit_and_text_summary (test_agent_gate.CliTests.test_pass_exit_and_text_summary) ... ok
+test_recursive_directory_and_stable_order (test_agent_gate.CliTests.test_recursive_directory_and_stable_order) ... ok
+test_usage_errors (test_agent_gate.CliTests.test_usage_errors) ... ok
+test_violation_exit_and_text_lines (test_agent_gate.CliTests.test_violation_exit_and_text_lines) ... ok
+test_ag001_unapproved_or_missing_model (test_agent_gate.RuleTests.test_ag001_unapproved_or_missing_model) ... ok
+test_ag002_over_cap_or_missing_budget (test_agent_gate.RuleTests.test_ag002_over_cap_or_missing_budget) ... ok
+test_ag003_each_unapproved_risky_tool_once (test_agent_gate.RuleTests.test_ag003_each_unapproved_risky_tool_once) ... ok
+test_ag003_missing_approval_list (test_agent_gate.RuleTests.test_ag003_missing_approval_list) ... ok
+test_ag004_over_cap_or_missing_steps (test_agent_gate.RuleTests.test_ag004_over_cap_or_missing_steps) ... ok
+test_ag005_missing_or_blank_owner (test_agent_gate.RuleTests.test_ag005_missing_or_blank_owner) ... ok
+test_ag006_typo_does_not_grant_approval (test_agent_gate.RuleTests.test_ag006_typo_does_not_grant_approval) ... ok
+test_compliant_at_caps (test_agent_gate.RuleTests.test_compliant_at_caps) ... ok
+test_fallback_name (test_agent_gate.RuleTests.test_fallback_name) ... ok
+test_invalid_types_and_ranges_are_errors (test_agent_gate.RuleTests.test_invalid_types_and_ranges_are_errors) ... ok
+test_owner_optional (test_agent_gate.RuleTests.test_owner_optional) ... ok
+test_unused_risky_tools_need_no_approval (test_agent_gate.RuleTests.test_unused_risky_tools_need_no_approval) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.731s
+
+OK
+
+diff --git a/agent-gate/README.md b/agent-gate/README.md
+index e23957d28d0d9da9ea6883cd51e023879f7afcf2..dac92a8ae7a0dbf1861415a36249acddf0a12511
+--- a/agent-gate/README.md
++++ b/agent-gate/README.md
+@@ -21,8 +21,8 @@
+ 
+ The input may be a single file or a directory searched recursively for `*.toml`.
+ The policy file is excluded when it is inside the agent directory. The examples
+-use fictional model names; replace these with your team's model identifiers. `invoice-chaser` passes;
+-`social-poster` deliberately violates all six rules.
++use fictional model names; replace these with your team's model identifiers.
++`invoice-chaser` passes; `social-poster` deliberately violates all six rules.
+ 
+ Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
+ a summary. JSON reports are a list of objects with `agent`, `rule_id`, and
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 911a9be670e941c281348781d8edbeb0de6ea306..15161a020d72d1b90ffbb4bb01c423e2f87f4ba8
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -166,6 +166,25 @@
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory.resolve()))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+
+codex
+Done in `./agent-gate`:
+
+- Moved example agents into `examples/agents/`, keeping the policy in place.
+- Updated README, workflow, and test paths.
+- Excluded the policy by resolved path during collection, with regression tests.
+
+All **24 tests pass**. Your original command now checks 2 agents and reports only the 6 intentional `social-poster` violations.
+diff --git a/agent-gate/README.md b/agent-gate/README.md
+index e23957d28d0d9da9ea6883cd51e023879f7afcf2..dac92a8ae7a0dbf1861415a36249acddf0a12511
+--- a/agent-gate/README.md
++++ b/agent-gate/README.md
+@@ -21,8 +21,8 @@
+ 
+ The input may be a single file or a directory searched recursively for `*.toml`.
+ The policy file is excluded when it is inside the agent directory. The examples
+-use fictional model names; replace these with your team's model identifiers. `invoice-chaser` passes;
+-`social-poster` deliberately violates all six rules.
++use fictional model names; replace these with your team's model identifiers.
++`invoice-chaser` passes; `social-poster` deliberately violates all six rules.
+ 
+ Text reports show one `FAIL <agent> <rule-id> <message>` line per violation and
+ a summary. JSON reports are a list of objects with `agent`, `rule_id`, and
+diff --git a/agent-gate/src/agent_gate/cli.py b/agent-gate/src/agent_gate/cli.py
+index 813134b3c1d6edb6c14c81b967e995bea89768c0..2da0bca9eeda9c6dba991a5fff904f4620f377b3
+--- a/agent-gate/src/agent_gate/cli.py
++++ b/agent-gate/src/agent_gate/cli.py
+@@ -9,13 +9,15 @@
+ from .report import render
+ 
+ 
+-def agent_files(path: Path) -> list[Path]:
++def agent_files(path: Path, policy_path: Path) -> list[Path]:
+     if path.is_file():
+-        return [path]
+-    if not path.is_dir():
++        files = [path]
++    elif path.is_dir():
++        files = sorted(path.rglob("*.toml"))
++    else:
+         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
+-    files = sorted(path.rglob("*.toml"))
+-    files = [file for file in files if file.is_file()]
++    policy_path = policy_path.resolve()
++    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+     if not files:
+         raise ValueError(f"{path}: no agent TOML files found")
+     return files
+@@ -32,7 +34,7 @@
+ 
+     try:
+         policy = Policy.load(args.policy)
+-        files = agent_files(args.agents)
++        files = agent_files(args.agents, args.policy)
+         violations = []
+         for path in files:
+             data = load_toml(path)
+diff --git a/agent-gate/tests/test_agent_gate.py b/agent-gate/tests/test_agent_gate.py
+index 911a9be670e941c281348781d8edbeb0de6ea306..15161a020d72d1b90ffbb4bb01c423e2f87f4ba8
+--- a/agent-gate/tests/test_agent_gate.py
++++ b/agent-gate/tests/test_agent_gate.py
+@@ -166,6 +166,25 @@
+         self.assertEqual(first.stdout, second.stdout)
+         self.assertEqual([item["agent"] for item in json.loads(first.stdout)], ["first"] * 6 + ["last"] * 6)
+ 
++    def test_directory_excludes_policy_file(self):
++        for policy in (self.policy, Path(os.path.relpath(self.policy, self.directory.resolve()))):
++            with self.subTest(policy=policy):
++                result = self.run_cli("check", "--policy", policy, ROOT / "examples")
++                self.assertEqual(result.returncode, 1, result.stderr)
++                lines = result.stdout.splitlines()
++                self.assertEqual(len(lines), 7)
++                for line in lines[:-1]:
++                    self.assertTrue(line.startswith("FAIL social-poster "), line)
++                self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
++
++    def test_directory_with_only_policy_is_empty(self):
++        content = self.policy.read_text()
++        self.policy = self.directory / "policy.toml"
++        self.policy.write_text(content)
++        result = self.check(self.directory)
++        self.assert_error(result)
++        self.assertIn("no agent TOML files found", result.stderr)
++
+     def test_malformed_agent_toml(self):
+         path = self.directory / "broken.toml"
+         path.write_text('name = "unterminated')
+
+tokens used
+23,138
+Done in `./agent-gate`:
+
+- Moved example agents into `examples/agents/`, keeping the policy in place.
+- Updated README, workflow, and test paths.
+- Excluded the policy by resolved path during collection, with regression tests.
+
+All **24 tests pass**. Your original command now checks 2 agents and reports only the 6 intentional `social-poster` violations.
+exit 0
+end 10:40:08

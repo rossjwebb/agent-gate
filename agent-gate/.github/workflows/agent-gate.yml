@@ -21,4 +21,4 @@ jobs:
       - run: python -m unittest discover -s tests
       # Point this at your agents/ directory when adopting the gate.
       # social-poster.toml is deliberately excluded: it demonstrates failures.
-      - run: python -m agent_gate check --policy examples/policy.toml examples/invoice-chaser.toml
+      - run: python -m agent_gate check --policy examples/policy.toml examples/agents/invoice-chaser.toml
