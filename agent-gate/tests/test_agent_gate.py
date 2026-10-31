@@ -177,6 +177,18 @@ class CliTests(unittest.TestCase):
                     self.assertTrue(line.startswith("FAIL social-poster "), line)
                 self.assertEqual(lines[-1], "FAIL: checked 2 agent(s); 6 violation(s)")
 
+    def test_directory_skips_hidden_agent_files(self):
+        content = (ROOT / "examples" / "agents" / "invoice-chaser.toml").read_text()
+        (self.directory / "agent.toml").write_text(content)
+        nested = self.directory / "nested"
+        nested.mkdir()
+        for directory in (self.directory, nested):
+            for name in ("._foo.toml", ".hidden.toml"):
+                (directory / name).write_bytes(b"\xff")
+        result = self.check(self.directory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "PASS: checked 1 agent(s); 0 violation(s)\n")
+
     def test_directory_with_only_policy_is_empty(self):
         content = self.policy.read_text()
         self.policy = self.directory / "policy.toml"

@@ -17,7 +17,10 @@ def agent_files(path: Path, policy_path: Path) -> list[Path]:
     else:
         raise ValueError(f"{path}: agent path does not exist or is not a file/directory")
     policy_path = policy_path.resolve()
-    files = [file for file in files if file.is_file() and file.resolve() != policy_path]
+    files = [
+        file for file in files
+        if not file.name.startswith(".") and file.is_file() and file.resolve() != policy_path
+    ]
     if not files:
         raise ValueError(f"{path}: no agent TOML files found")
     return files
